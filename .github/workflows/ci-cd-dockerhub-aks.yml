@@ -15,10 +15,14 @@ on:
 env:
   NODE_VERSION: 18
   K8S_MANIFEST_DIR: k8s
+  DOCKERHUB_USERNAME: herifauzan
+  # If you want a different repo name, set the repository secret DOCKERHUB_REPO.
+  # Otherwise the default below will be used by the workflow script.
+  DEFAULT_DOCKERHUB_REPO: pgmicroservice
 
 jobs:
   build-and-test:
-    name: Install, Test & Sonar
+    name: Install & Test
     runs-on: ubuntu-latest
     outputs:
       image-tag: ${{ steps.set-tag.outputs.image-tag }}
@@ -54,3 +58,98 @@ jobs:
         run: |
           TAG=${GITHUB_SHA::8}
           echo "image-tag=$TAG" >> $GITHUB_OUTPUT
+
+  build-push-and-deploy:
+    name: Build image, push to Docker Hub, deploy to AKS
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get image tag from previous job
+        id: get-tag
+        run: echo "IMAGE_TAG=${{ needs.build-and-test.outputs.image-tag }}" >> $GITHUB_ENV
+
+      - name: Determine Docker Hub repo
+        id: repo
+        run: |
+          # prefer repo from secret DOCKERHUB_REPO, else use DEFAULT_DOCKERHUB_REPO
+          if [ -n "${{ secrets.DOCKERHUB_REPO }}" ]; then
+            echo "REPO=${{ secrets.DOCKERHUB_REPO }}" >> $GITHUB_ENV
+          else
+            echo "REPO=${{ env.DEFAULT_DOCKERHUB_REPO }}" >> $GITHUB_ENV
+          fi
+          echo "Using Docker Hub repo: $REPO"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ env.DOCKERHUB_USERNAME }}
+          DOCKERHUB_REPO: ${{ env.REPO }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+        run: |
+          IMAGE_SHA=${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO}:${IMAGE_TAG}
+          IMAGE_LATEST=${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO}:latest
+          echo "Building and pushing images:"
+          echo "  - $IMAGE_SHA"
+          echo "  - $IMAGE_LATEST"
+          # Use buildx + push so cross-platform builds will work in GH runners
+          docker buildx create --use --driver docker-container || true
+          docker buildx build --platform linux/amd64 \
+            --tag "$IMAGE_SHA" \
+            --tag "$IMAGE_LATEST" \
+            --push .
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Azure CLI version
+        run: az --version
+
+      - name: Set kubectl context for AKS
+        uses: azure/aks-set-context@v3
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          cluster-name: ${{ secrets.AKS_CLUSTER_NAME }}
+          resource-group: ${{ secrets.AKS_RESOURCE_GROUP }}
+
+      - name: Replace image in k8s manifests and deploy
+        env:
+          DOCKERHUB_USERNAME: ${{ env.DOCKERHUB_USERNAME }}
+          DOCKERHUB_REPO: ${{ env.REPO }}
+          IMAGE_TAG: ${{ env.IMAGE_TAG }}
+          K8S_MANIFEST_DIR: ${{ env.K8S_MANIFEST_DIR }}
+        run: |
+          IMAGE="${DOCKERHUB_USERNAME}/${DOCKERHUB_REPO}:${IMAGE_TAG}"
+          echo "Deploying image: $IMAGE"
+
+          if [ ! -d "$K8S_MANIFEST_DIR" ]; then
+            echo "No k8s manifest dir ($K8S_MANIFEST_DIR) found — aborting deploy"
+            exit 1
+          fi
+
+          # Replace placeholder IMAGE_PLACEHOLDER in yaml files and apply
+          for f in $(find $K8S_MANIFEST_DIR -type f -name '*.yml' -o -name '*.yaml'); do
+            echo "Processing $f"
+            # create a temp copy so we don't modify repo contents permanently
+            tmp="$(mktemp)"
+            sed "s|IMAGE_PLACEHOLDER|$IMAGE|g" "$f" > "$tmp"
+            kubectl apply -f "$tmp"
+            rm -f "$tmp"
+          done
+
+      - name: Verify deployment rollout (informational)
+        run: |
+          echo "To check rollout status manually, run:"
+          echo "  kubectl get pods -n <namespace> -l app=pgmicroservice"
+          echo "  kubectl rollout status deployment/pgmicroservice -n <namespace>"
+
