@@ -1,0 +1,56 @@
+name: CI / CD -> Docker Hub -> AKS
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - dev
+  pull_request:
+    branches:
+      - main
+      - master
+      - dev
+
+env:
+  NODE_VERSION: 18
+  K8S_MANIFEST_DIR: k8s
+
+jobs:
+  build-and-test:
+    name: Install, Test & Sonar
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.set-tag.outputs.image-tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Set IMAGE_TAG output
+        id: set-tag
+        run: |
+          TAG=${GITHUB_SHA::8}
+          echo "image-tag=$TAG" >> $GITHUB_OUTPUT

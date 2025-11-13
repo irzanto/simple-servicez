@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgmicroservice
+  labels:
+    app: pgmicroservice
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pgmicroservice
+  template:
+    metadata:
+      labels:
+        app: pgmicroservice
+    spec:
+      containers:
+        - name: pgmicroservice
+          image: IMAGE_PLACEHOLDER
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: pg-credentials
+                  key: host
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: pg-credentials
+                  key: user
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-credentials
+                  key: password
+            - name: PGDATABASE
+              value: users_dev
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 20
