@@ -2,7 +2,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: pgmicroservice-ingress
-  namespace: herifauzan          # change if your namespace is different
+  namespace: irzanto          # change if your namespace is different
   annotations:
     kubernetes.io/ingress.class: nginx
 spec:
