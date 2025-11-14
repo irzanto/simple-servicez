@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: pgmicroservice
-          image: irzanto/pgmicroservic:latest
+          image: irzanto/irz-simple-service-dh:latest
           ports:
             - containerPort: 3000
           env:
